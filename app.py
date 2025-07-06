@@ -257,8 +257,7 @@ def extract_face_data(face):
         
         return {
             'vertices': vertices,
-            'indices': indices,
-            'area': BRep_Tool.Surface(face, loc)[0] if BRep_Tool.Surface(face, loc)[0] else 0
+            'indices': indices
         }
     
     return None
