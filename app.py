@@ -42,14 +42,21 @@ def parse_step():
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         face = topods_Face(exp.Current())
-        mesh_data = []
-        triangulation = BRep_Tool.Triangulation(face, None)
-        if triangulation:
-            nodes = triangulation.Nodes()
-            triangles = triangulation.Triangles()
-            verts = [[nodes.Value(i + 1).X(), nodes.Value(i + 1).Y(), nodes.Value(i + 1).Z()] for i in range(nodes.Length())]
-            tris = [[t.Value(1) - 1, t.Value(2) - 1, t.Value(3) - 1] for t in triangles]
+
+        # You *must* pass a real TopLoc_Location:
+        loc = TopLoc_Location()            # or face.Location()
+        triangulation = BRep_Tool.Triangulation(face, loc)
+
+        if triangulation:                  # may still be None if meshing failed
+            nodes      = triangulation.Nodes()
+            triangles  = triangulation.Triangles()
+            verts = [[nodes.Value(i+1).X(),
+                    nodes.Value(i+1).Y(),
+                    nodes.Value(i+1).Z()] for i in range(nodes.Length())]
+            tris  = [[t.Value(1)-1, t.Value(2)-1, t.Value(3)-1]
+                    for t in triangles]
             faces.append({'vertices': verts, 'indices': tris})
+
         exp.Next()
 
     # Extract edges
