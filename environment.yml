@@ -1,0 +1,24 @@
+name: membership_transfer
+channels:
+  - conda-forge
+  - defaults
+  - lambouj
+  - open3d-admin
+dependencies:
+  - python=3.8
+  - pip
+  - flask
+  - pythonocc-core=7.5.1
+  - numpy
+  - tqdm
+  - igl
+  - occwl==0.0.1  
+  - open3d
+  - scikit-learn
+  - yaml
+  - pyyaml
+  - pandas
+  - plyfile
+  - py7zr
+  - pip:
+      - matplotlib

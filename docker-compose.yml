@@ -1,0 +1,13 @@
+services:
+  cad-runner:
+    platform: linux/amd64  # ✅ Move it here!
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cad-runner
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app
+    ports:
+      - "3000:3000"
