@@ -1,3 +1,4 @@
+version: '3.8'
 services:
   cad-runner:
     platform: linux/amd64
@@ -15,6 +16,14 @@ services:
       - "5001"
     networks:
       - cad-net
+  step-parser:
+    build: .
+    volumes:
+      - .:/app
+      - ./output:/app/output
+    environment:
+      - DISPLAY=:99
+    command: ["conda", "run", "-n", "step-parser", "python", "testStep.py", "--input_dir", "/app", "--output_dir", "/app/output"]
 
 networks:
   cad-net:

@@ -634,8 +634,10 @@ def parse_step():
 @app.route('/render-step', methods=['POST'])
 def render_step():
     """Render STEP file to images with various viewing angles"""
+    print("[render-step] Received request", flush=True)
     file = request.files.get('file')
     if not file:
+        print("[render-step] No file uploaded", flush=True)
         return jsonify({'error': 'No file uploaded'}), 400
 
     # Get render options from request
@@ -646,18 +648,23 @@ def render_step():
         'num_orbit_views': int(request.form.get('num_orbit_views', '12')),
         'return_format': request.form.get('return_format', 'zip')  # 'zip' or 'json'
     }
+    print(f"[render-step] Render options: {render_options}", flush=True)
 
     filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    print(f"[render-step] Saving uploaded file to: {filepath}", flush=True)
     file.save(filepath)
 
     try:
         # Read STEP file
+        print(f"[render-step] Reading STEP file: {filepath}", flush=True)
         reader = STEPControl_Reader()
         status = reader.ReadFile(filepath)
 
         if status != IFSelect_RetDone:
+            print(f"[render-step] Failed to read STEP file: {filepath}", flush=True)
             return jsonify({'error': 'Failed to read STEP file'}), 500
 
+        print(f"[render-step] STEP file read successfully: {filepath}", flush=True)
         reader.TransferRoot()
         shape = reader.OneShape()
 
@@ -665,22 +672,27 @@ def render_step():
         model_name = os.path.splitext(file.filename)[0]
         render_id = f"{model_name}_{int(os.urandom(4).hex(), 16)}"
         output_dir = os.path.join(RENDERS_FOLDER, render_id)
+        print(f"[render-step] Creating output directory: {output_dir}", flush=True)
         os.makedirs(output_dir, exist_ok=True)
 
         # Render the model
+        print(f"[render-step] Starting rendering for model: {model_name}", flush=True)
         rendered_files = render_step_model(shape, output_dir, model_name, render_options)
+        print(f"[render-step] Rendering complete. Rendered files: {rendered_files}", flush=True)
 
         # Cleanup uploaded file
+        print(f"[render-step] Removing uploaded file: {filepath}", flush=True)
         os.remove(filepath)
 
         # Return based on requested format
         if render_options['return_format'] == 'zip':
             # Create ZIP file with all rendered images
             zip_path = os.path.join(output_dir, f"{model_name}_renders.zip")
+            print(f"[render-step] Creating ZIP archive: {zip_path}", flush=True)
             with zipfile.ZipFile(zip_path, 'w') as zipf:
                 for rendered_file in rendered_files:
                     zipf.write(rendered_file, os.path.basename(rendered_file))
-
+            print(f"[render-step] Returning ZIP file: {zip_path}", flush=True)
             return send_file(zip_path, as_attachment=True, download_name=f"{model_name}_renders.zip")
 
         else:  # return_format == 'json'
@@ -693,9 +705,10 @@ def render_step():
                         'filename': os.path.basename(rendered_file),
                         'data': img_data
                     })
-
+            print(f"[render-step] Returning {len(images_data)} images as JSON", flush=True)
             # Cleanup render directory
             import shutil
+            print(f"[render-step] Removing render directory: {output_dir}", flush=True)
             shutil.rmtree(output_dir)
 
             return jsonify({
@@ -707,10 +720,13 @@ def render_step():
 
     except Exception as e:
         # Cleanup uploaded file and render directory in case of error
+        print(f"[render-step] Exception occurred: {str(e)}", flush=True)
         if os.path.exists(filepath):
+            print(f"[render-step] Removing uploaded file due to error: {filepath}", flush=True)
             os.remove(filepath)
         if 'output_dir' in locals() and os.path.exists(output_dir):
             import shutil
+            print(f"[render-step] Removing output directory due to error: {output_dir}", flush=True)
             shutil.rmtree(output_dir)
         return jsonify({'error': f'Failed to render STEP file: {str(e)}'}), 500
 
