@@ -1,5 +1,8 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import os
+import tempfile
+import base64
+from io import BytesIO
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.BRep import BRep_Tool
@@ -36,8 +39,29 @@ from OCC.Core.TopoDS import (
     topods_Vertex,
     topods_Face,
     TopoDS_Iterator,
+    TopoDS_Shape,
 )
 
+# Additional imports for rendering
+from OCC.Core.Bnd import Bnd_Box
+from OCC.Core.BRepBndLib import brepbndlib_Add
+from OCC.Core.gp import gp_Trsf, gp_Pnt, gp_Dir
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform, BRepBuilderAPI_MakeVertex
+from OCC.Core.Graphic3d import Graphic3d_TOSM_FRAGMENT, Graphic3d_NameOfMaterial, Graphic3d_MaterialAspect
+from OCC.Display.OCCViewer import Viewer3d
+from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB, Quantity_NOC_RED
+from OCC.Core.AIS import AIS_Shape
+from OCC.Extend.TopologyUtils import TopologyExplorer
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.GeomAbs import (
+    GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Sphere,
+    GeomAbs_Torus, GeomAbs_SurfaceOfRevolution, GeomAbs_SurfaceOfExtrusion,
+    GeomAbs_BezierSurface, GeomAbs_BSplineSurface
+)
+import numpy as np
+from math import cos, sin, radians
+import zipfile
+import glob
 
 class WireExplorer(object):
     """
@@ -225,6 +249,183 @@ class Topo(object):
         we = WireExplorer(wire)
         return we.ordered_edges()
 
+
+# === Rendering Configuration === #
+IMAGE_SIZE = (1280, 960)
+RENDERS_FOLDER = './renders'
+os.makedirs(RENDERS_FOLDER, exist_ok=True)
+
+# View directions for orbit rendering
+CAMERA_VIEWS = {
+    "front": gp_Dir(0, -1, 0),
+    "rear": gp_Dir(0, 1, 0),
+    "left": gp_Dir(-1, 0, 0),
+    "right": gp_Dir(1, 0, 0),
+    "top": gp_Dir(0, 0, 1),
+    "bottom": gp_Dir(0, 0, -1),
+    "iso": gp_Dir(1, -1, 1),
+}
+
+def normalize_shape(shape):
+    """Normalize shape into [-1, 1]^3 bounding box"""
+    bbox = Bnd_Box()
+    brepbndlib_Add(shape, bbox)
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+
+    center = gp_Pnt((xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2)
+    scale = 2.0 / max(xmax - xmin, ymax - ymin, zmax - zmin)
+    trsf = gp_Trsf()
+    trsf.SetScale(center, scale)
+    return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+def get_face_type_code(face):
+    """Get surface type code for face coloring"""
+    surf = BRepAdaptor_Surface(face, True)
+    surf_type = surf.GetType()
+    return {
+        GeomAbs_Plane: 0,
+        GeomAbs_Cylinder: 1,
+        GeomAbs_Cone: 2,
+        GeomAbs_Sphere: 3,
+        GeomAbs_Torus: 4,
+        GeomAbs_SurfaceOfRevolution: 5,
+        GeomAbs_SurfaceOfExtrusion: 6,
+        GeomAbs_BezierSurface: 7,
+        GeomAbs_BSplineSurface: 8
+    }.get(surf_type, 7)  # fallback to Bezier for unknowns
+
+def generate_face_membership_colors(face_ids):
+    """Generate colors for face membership visualization"""
+    base_colors = [
+        [1.00, 0.67, 0.60], [0.00, 0.00, 0.70], [1.00, 1.00, 0.40],
+        [1.00, 0.60, 0.80], [0.10, 1.00, 1.00], [0.75, 0.70, 1.00],
+        [1.00, 0.90, 0.70], [0.40, 0.70, 1.00], [0.60, 0.00, 0.30],
+        [0.90, 1.00, 0.70], [0.40, 0.00, 0.40]
+    ]
+    n_faces = max(face_ids) + 1
+    if n_faces > len(base_colors):
+        import colorsys
+        extra = [colorsys.hsv_to_rgb(i / (n_faces - 11) + 0.27, 1, 1) for i in range(n_faces - 11)]
+        base_colors.extend(extra)
+    return np.array([base_colors[fid] for fid in face_ids])
+
+def generate_face_type_colors(face_types):
+    """Generate colors for face type visualization"""
+    type_colors = [
+        [1.00, 0.47, 0.20], [1.00, 0.87, 0.20], [0.67, 1.00, 0.00],
+        [0.00, 0.70, 0.58], [0.10, 1.00, 1.00], [0.00, 0.58, 0.70],
+        [0.00, 0.33, 1.00], [0.50, 0.40, 1.00]
+    ]
+    return np.array([type_colors[ft] if ft < len(type_colors) else [0.5, 0.5, 0.5] for ft in face_types])
+
+def assign_face_colors(shape: TopoDS_Shape, mode="uniform"):
+    """Assign colors to faces based on the specified mode"""
+    faces = list(TopologyExplorer(shape).faces())
+    color_map = []
+
+    if mode == "uniform":
+        rgb = [0.3, 0.8, 0.8]  # teal
+        color_map = [Quantity_Color(*rgb, Quantity_TOC_RGB) for _ in faces]
+
+    elif mode == "by_index":
+        face_ids = list(range(len(faces)))
+        colors = generate_face_membership_colors(face_ids)
+        color_map = [Quantity_Color(*rgb, Quantity_TOC_RGB) for rgb in colors]
+
+    elif mode == "by_type":
+        face_types = [get_face_type_code(f) for f in faces]
+        colors = generate_face_type_colors(face_types)
+        color_map = [Quantity_Color(*rgb, Quantity_TOC_RGB) for rgb in colors]
+
+    else:
+        raise ValueError(f"Unsupported coloring mode: {mode}")
+
+    return list(zip(faces, color_map))
+
+def render_step_model(shape, output_dir, model_name, render_options=None):
+    """Render STEP model to multiple view images"""
+    if render_options is None:
+        render_options = {
+            'face_coloring_mode': 'uniform',
+            'show_edges': True,
+            'show_vertices': True,
+            'num_orbit_views': 12
+        }
+    
+    # Normalize shape
+    shape = normalize_shape(shape)
+    
+    # Create renderer
+    renderer = Viewer3d()
+    renderer.Create()
+    renderer.SetSize(*IMAGE_SIZE)
+    renderer.set_bg_gradient_color([255, 255, 255], [255, 255, 255])
+    renderer.SetModeShaded()
+    renderer.View.SetShadingModel(Graphic3d_TOSM_FRAGMENT)
+
+    # Render faces with coloring
+    face_coloring_mode = render_options.get('face_coloring_mode', 'uniform')
+    for face, color in assign_face_colors(shape, mode=face_coloring_mode):
+        face_ais = AIS_Shape(face)
+        face_ais.SetMaterial(Graphic3d_MaterialAspect(Graphic3d_NameOfMaterial.Graphic3d_NOM_PLASTIC))
+        face_ais.SetTransparency(0.2)  # subtle transparency
+        renderer.Context.SetColor(face_ais, color, False)
+        renderer.Context.Display(face_ais, False)
+
+    # Render edges if requested
+    if render_options.get('show_edges', True):
+        edge_color = Quantity_Color(0.0, 0.0, 0.0, Quantity_TOC_RGB)
+        for edge in TopologyExplorer(shape).edges():
+            edge_ais = AIS_Shape(edge)
+            edge_ais.SetMaterial(Graphic3d_MaterialAspect(Graphic3d_NameOfMaterial.Graphic3d_NOM_PLASTIC))
+            edge_ais.SetWidth(4.0)  # thicker edges
+            renderer.Context.SetColor(edge_ais, edge_color, False)
+            renderer.Context.Display(edge_ais, False)
+
+    # Render vertices if requested
+    if render_options.get('show_vertices', True):
+        vertex_color = Quantity_Color(Quantity_NOC_RED)
+        for vertex in TopologyExplorer(shape).vertices():
+            pnt = BRep_Tool.Pnt(vertex)  # Extract gp_Pnt from TopoDS_Vertex
+            vertex_shape = BRepBuilderAPI_MakeVertex(pnt).Shape()
+            vertex_ais = AIS_Shape(vertex_shape)
+            vertex_ais.SetMaterial(Graphic3d_MaterialAspect(Graphic3d_NameOfMaterial.Graphic3d_NOM_PLASTIC))
+            renderer.Context.SetColor(vertex_ais, vertex_color, False)
+            renderer.Context.Display(vertex_ais, False)
+            vertex_ais.SetWidth(25.0)  # This controls visual size in screen space
+
+    renderer.FitAll()
+    renderer.Repaint()
+
+    # Generate orbit views
+    rendered_files = []
+    radius = 3.0
+    inclination_deg = 45
+    inclination_rad = radians(inclination_deg)
+    center = gp_Pnt(0, 0, 0)
+    
+    num_views = render_options.get('num_orbit_views', 12)
+    angle_step = 360 // num_views
+
+    for i, theta_deg in enumerate(range(0, 360, angle_step)):
+        theta_rad = radians(theta_deg)
+        x = radius * cos(theta_rad) * cos(inclination_rad)
+        y = radius * sin(theta_rad) * cos(inclination_rad)
+        z = radius * sin(inclination_rad)
+
+        eye = gp_Pnt(x, y, z)
+        renderer.camera.SetEye(eye)
+        renderer.camera.SetCenter(center)
+        renderer.camera.SetUp(gp_Dir(0, 0, 1))  # Z-up
+        renderer.FitAll()
+        renderer.SetSize(*IMAGE_SIZE)
+
+        filename = f"{model_name}_orbit_{i:02d}.png"
+        filepath = os.path.join(output_dir, filename)
+        renderer.View.Dump(filepath)
+        rendered_files.append(filepath)
+
+    return rendered_files
 
 app = Flask(__name__)
 UPLOAD_FOLDER = './uploads'
@@ -430,5 +631,210 @@ def parse_step():
         return jsonify({'error': f'Failed to parse STEP file: {str(e)}'}), 500
 
 
+@app.route('/render-step', methods=['POST'])
+def render_step():
+    """Render STEP file to images with various viewing angles"""
+    file = request.files.get('file')
+    if not file:
+        return jsonify({'error': 'No file uploaded'}), 400
+
+    # Get render options from request
+    render_options = {
+        'face_coloring_mode': request.form.get('face_coloring_mode', 'uniform'),
+        'show_edges': request.form.get('show_edges', 'true').lower() == 'true',
+        'show_vertices': request.form.get('show_vertices', 'true').lower() == 'true',
+        'num_orbit_views': int(request.form.get('num_orbit_views', '12')),
+        'return_format': request.form.get('return_format', 'zip')  # 'zip' or 'json'
+    }
+
+    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(filepath)
+
+    try:
+        # Read STEP file
+        reader = STEPControl_Reader()
+        status = reader.ReadFile(filepath)
+
+        if status != IFSelect_RetDone:
+            return jsonify({'error': 'Failed to read STEP file'}), 500
+
+        reader.TransferRoot()
+        shape = reader.OneShape()
+
+        # Create unique output directory for this render
+        model_name = os.path.splitext(file.filename)[0]
+        render_id = f"{model_name}_{int(os.urandom(4).hex(), 16)}"
+        output_dir = os.path.join(RENDERS_FOLDER, render_id)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Render the model
+        rendered_files = render_step_model(shape, output_dir, model_name, render_options)
+
+        # Cleanup uploaded file
+        os.remove(filepath)
+
+        # Return based on requested format
+        if render_options['return_format'] == 'zip':
+            # Create ZIP file with all rendered images
+            zip_path = os.path.join(output_dir, f"{model_name}_renders.zip")
+            with zipfile.ZipFile(zip_path, 'w') as zipf:
+                for rendered_file in rendered_files:
+                    zipf.write(rendered_file, os.path.basename(rendered_file))
+
+            return send_file(zip_path, as_attachment=True, download_name=f"{model_name}_renders.zip")
+
+        else:  # return_format == 'json'
+            # Convert images to base64 and return in JSON
+            images_data = []
+            for rendered_file in rendered_files:
+                with open(rendered_file, 'rb') as img_file:
+                    img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                    images_data.append({
+                        'filename': os.path.basename(rendered_file),
+                        'data': img_data
+                    })
+
+            # Cleanup render directory
+            import shutil
+            shutil.rmtree(output_dir)
+
+            return jsonify({
+                'model_name': model_name,
+                'render_options': render_options,
+                'images': images_data,
+                'count': len(images_data)
+            })
+
+    except Exception as e:
+        # Cleanup uploaded file and render directory in case of error
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        if 'output_dir' in locals() and os.path.exists(output_dir):
+            import shutil
+            shutil.rmtree(output_dir)
+        return jsonify({'error': f'Failed to render STEP file: {str(e)}'}), 500
+
+
+@app.route('/render-step-batch', methods=['POST'])
+def render_step_batch():
+    """Render multiple STEP files in batch"""
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({'error': 'No files uploaded'}), 400
+
+    # Get render options from request
+    render_options = {
+        'face_coloring_mode': request.form.get('face_coloring_mode', 'uniform'),
+        'show_edges': request.form.get('show_edges', 'true').lower() == 'true',
+        'show_vertices': request.form.get('show_vertices', 'true').lower() == 'true',
+        'num_orbit_views': int(request.form.get('num_orbit_views', '12'))
+    }
+
+    batch_id = f"batch_{int(os.urandom(4).hex(), 16)}"
+    batch_output_dir = os.path.join(RENDERS_FOLDER, batch_id)
+    os.makedirs(batch_output_dir, exist_ok=True)
+
+    results = []
+    
+    for file in files:
+        if not file.filename:
+            continue
+            
+        filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(filepath)
+
+        try:
+            # Read STEP file
+            reader = STEPControl_Reader()
+            status = reader.ReadFile(filepath)
+
+            if status != IFSelect_RetDone:
+                results.append({
+                    'filename': file.filename,
+                    'status': 'error',
+                    'error': 'Failed to read STEP file'
+                })
+                continue
+
+            reader.TransferRoot()
+            shape = reader.OneShape()
+
+            # Create output directory for this model
+            model_name = os.path.splitext(file.filename)[0]
+            model_output_dir = os.path.join(batch_output_dir, model_name)
+            os.makedirs(model_output_dir, exist_ok=True)
+
+            # Render the model
+            rendered_files = render_step_model(shape, model_output_dir, model_name, render_options)
+
+            results.append({
+                'filename': file.filename,
+                'status': 'success',
+                'rendered_count': len(rendered_files),
+                'model_dir': model_name
+            })
+
+        except Exception as e:
+            results.append({
+                'filename': file.filename,
+                'status': 'error',
+                'error': str(e)
+            })
+        finally:
+            # Cleanup uploaded file
+            if os.path.exists(filepath):
+                os.remove(filepath)
+
+    # Create ZIP file with all batch results
+    zip_path = os.path.join(batch_output_dir, f"{batch_id}_renders.zip")
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for root, dirs, files in os.walk(batch_output_dir):
+            for file in files:
+                if file.endswith('.png'):
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, batch_output_dir)
+                    zipf.write(file_path, arcname)
+
+    return send_file(zip_path, as_attachment=True, download_name=f"{batch_id}_renders.zip")
+
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint to verify the service is running"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'STEP Parser & Renderer',
+        'endpoints': {
+            'parse': '/parse-step',
+            'render': '/render-step',
+            'batch_render': '/render-step-batch'
+        }
+    })
+
+
+@app.route('/test-rendering', methods=['GET'])
+def test_rendering():
+    """Test the rendering capability with Xvfb"""
+    try:
+        # Test if we can create a viewer (this will fail if X11/Xvfb is not working)
+        test_viewer = Viewer3d()
+        test_viewer.Create()
+        test_viewer.SetSize(256, 256)
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Rendering system is working correctly',
+            'display': os.environ.get('DISPLAY', 'Not set'),
+            'xvfb_status': 'OK'
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Rendering system error: {str(e)}',
+            'display': os.environ.get('DISPLAY', 'Not set'),
+            'xvfb_status': 'Failed'
+        }), 500
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=3000)
+    app.run(host='0.0.0.0', port=5001)

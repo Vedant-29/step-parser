@@ -1,6 +1,6 @@
 services:
   cad-runner:
-    platform: linux/amd64  # ✅ Move it here!
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -10,4 +10,12 @@ services:
       - .:/app
     working_dir: /app
     ports:
-      - "3000:3000"
+      - "5001:5001"
+    expose:
+      - "5001"
+    networks:
+      - cad-net
+
+networks:
+  cad-net:
+    external: true
