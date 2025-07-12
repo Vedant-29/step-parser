@@ -8,13 +8,24 @@ services:
     restart: unless-stopped
     volumes:
       - .:/app
+      # Mount X11 socket for display sharing
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Optional: Mount X11 authentication (if needed)
+      - /home/ubuntu/.Xauthority:/root/.Xauthority:rw
     working_dir: /app
     ports:
       - "5001:5001"
     expose:
       - "5001"
+    environment:
+      # Set DISPLAY to match your host's DISPLAY
+      - DISPLAY=${DISPLAY:-:1}
+      # Allow X11 connections
+      - XAUTHORITY=/root/.Xauthority
     networks:
       - cad-net
+    # Allow access to host's display
+    privileged: true
 
 networks:
   cad-net:
