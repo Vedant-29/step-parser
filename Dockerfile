@@ -37,8 +37,11 @@ RUN apt-get update && apt-get install -y \
 # Copy environment first to leverage Docker cache
 COPY environment.yml .
 
-# Create Conda environment
-RUN conda env create -f environment.yml && conda clean -afy
+# Create Conda environment using libmamba solver
+RUN conda install -n base conda-libmamba-solver && \
+    conda config --set solver libmamba && \
+    conda env create -f environment.yml && \
+    conda clean -afy
 
 # Set environment path
 ENV PATH /opt/conda/envs/membership_transfer/bin:$PATH
