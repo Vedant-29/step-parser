@@ -1,62 +1,75 @@
-FROM condaforge/mambaforge:latest
+FROM ubuntu:22.04
 
-# Set timezone and suppress interactive prompts
+# Set up basic environment
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Kolkata
 
 WORKDIR /app
 
-# Install system dependencies for OpenCASCADE rendering + X11 client libraries
+# Install core system dependencies (incl. latest Mesa)
 RUN apt-get update && apt-get install -y \
+    wget \
+    bzip2 \
+    ca-certificates \
+    libglib2.0-0 \
+    libxext6 \
+    libsm6 \
+    libxrender1 \
+    git \
+    build-essential \
+    mesa-utils \
     libgl1-mesa-glx \
     libgl1-mesa-dri \
     libglu1-mesa \
-    mesa-utils \
-    libegl1-mesa \
-    libgbm1 \
     libosmesa6 \
     libosmesa6-dev \
     libx11-6 \
-    libgtk-3-0 \
-    libxrender1 \
-    libxext6 \
-    libgdk-pixbuf2.0-0 \
-    libxi6 \
-    libxrandr2 \
-    libxss1 \
-    libxcursor1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxinerama1 \
-    libxcb1 \
     x11-apps \
     x11-utils \
     xauth \
+    # python support (optional: uncomment if not using conda python)
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy environment first to leverage Docker cache
+# (Optional: Add Kisak Mesa PPA for even newer mesa, usually not needed for 22.04)
+# RUN apt-get update && apt-get install -y software-properties-common && \
+#     add-apt-repository ppa:kisak/turtle && apt-get update && \
+#     apt-get install -y mesa-utils libgl1-mesa-glx libgl1-mesa-dri
+
+# --- Install micromamba (recommended for Docker!) ---
+ENV MAMBA_ROOT_PREFIX=/opt/conda
+ENV PATH=$MAMBA_ROOT_PREFIX/bin:$PATH
+
+RUN wget -O /tmp/micromamba.tar.bz2 "https://micro.mamba.pm/api/micromamba/linux-64/latest" && \
+    mkdir -p $MAMBA_ROOT_PREFIX/bin && \
+    tar -xvjf /tmp/micromamba.tar.bz2 -C $MAMBA_ROOT_PREFIX/bin --strip-components=1 bin/micromamba && \
+    rm /tmp/micromamba.tar.bz2
+
+# Copy your conda environment file (adjust as needed)
 COPY environment.yml .
 
-# Create Conda environment
-RUN mamba env create -f environment.yml && conda clean -afy
+# Create conda environment
+RUN micromamba create -y -n membership_transfer -f environment.yml && \
+    micromamba clean -a -y
 
-# Set environment path
+# Set environment for conda
+ENV CONDA_DEFAULT_ENV=membership_transfer
 ENV PATH /opt/conda/envs/membership_transfer/bin:$PATH
 
-# Copy source code
+# Copy your code
 COPY . .
 
-# Make startup script executable
+# Make entrypoint executable
 RUN chmod +x entrypoint.sh
 
-# DISPLAY will be set via docker-compose environment
+# Set default display (can be changed via docker-compose or at runtime)
 ENV DISPLAY=:1
 
-# Force software OpenGL rendering for container compatibility
+# Use llvmpipe/software rendering
 ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MESA_GL_VERSION_OVERRIDE=3.3
 ENV GALLIUM_DRIVER=llvmpipe
 
-# Use conda + entrypoint script
+# Entrypoint (could also use CMD ["python", "your_app.py"])
 ENTRYPOINT ["./entrypoint.sh"]
