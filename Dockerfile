@@ -1,12 +1,11 @@
-FROM condaforge/mambaforge:latest
+FROM continuumio/miniconda3:latest
 
-# Set timezone and suppress interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Kolkata
 
 WORKDIR /app
 
-# Install system dependencies for OpenCASCADE rendering + X11 client libraries
+# Install system dependencies for OCC, X11, GL, etc.
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libgl1-mesa-dri \
@@ -35,28 +34,26 @@ RUN apt-get update && apt-get install -y \
     xauth \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy environment first to leverage Docker cache
+# Copy your environment file (YAML format, NOT package_lists.txt)
 COPY environment.yml .
 
-# Create Conda environment
-RUN mamba env create -f environment.yml && conda clean -afy
+# Create conda environment as per your environment.yml
+RUN conda env create -f environment.yml
 
-# Set environment path
+# Make your environment the default
+SHELL ["conda", "run", "-n", "membership_transfer", "/bin/bash", "-c"]
+
+# Set environment path (optional: for bash shells)
 ENV PATH /opt/conda/envs/membership_transfer/bin:$PATH
 
 # Copy source code
 COPY . .
 
-# Make startup script executable
 RUN chmod +x entrypoint.sh
 
-# DISPLAY will be set via docker-compose environment
 ENV DISPLAY=:1
-
-# Force software OpenGL rendering for container compatibility
 ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MESA_GL_VERSION_OVERRIDE=3.3
 ENV GALLIUM_DRIVER=llvmpipe
 
-# Use conda + entrypoint script
 ENTRYPOINT ["./entrypoint.sh"]
