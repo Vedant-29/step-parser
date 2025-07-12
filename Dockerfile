@@ -1,11 +1,11 @@
 FROM continuumio/miniconda3:latest
-
+# Set timezone and suppress interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Kolkata
 
 WORKDIR /app
 
-# Install system dependencies for OCC, X11, GL, etc.
+# Install system dependencies for OpenCASCADE rendering + X11 client libraries
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libgl1-mesa-dri \
@@ -34,26 +34,28 @@ RUN apt-get update && apt-get install -y \
     xauth \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy your environment file (YAML format, NOT package_lists.txt)
+# Copy environment first to leverage Docker cache
 COPY environment.yml .
 
-# Create conda environment as per your environment.yml
-RUN conda env create -f environment.yml
+# Create Conda environment
+RUN conda env create -f environment.yml && conda clean -afy
 
-# Make your environment the default
-SHELL ["conda", "run", "-n", "membership_transfer", "/bin/bash", "-c"]
-
-# Set environment path (optional: for bash shells)
+# Set environment path
 ENV PATH /opt/conda/envs/membership_transfer/bin:$PATH
 
 # Copy source code
 COPY . .
 
+# Make startup script executable
 RUN chmod +x entrypoint.sh
 
+# DISPLAY will be set via docker-compose environment
 ENV DISPLAY=:1
+
+# Force software OpenGL rendering for container compatibility
 ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MESA_GL_VERSION_OVERRIDE=3.3
 ENV GALLIUM_DRIVER=llvmpipe
 
+# Use conda + entrypoint script
 ENTRYPOINT ["./entrypoint.sh"]
