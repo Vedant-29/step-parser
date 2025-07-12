@@ -22,7 +22,6 @@ RUN apt-get update && apt-get install -y \
     libosmesa6 \
     libosmesa6-dev \
     libglapi-mesa \
-    libgl1-mesa-swx11 \
     libxss1 \
     libgconf-2-4 \
     libxtst6 \
