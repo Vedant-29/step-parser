@@ -9,7 +9,13 @@ WORKDIR /app
 # Install system dependencies for OpenCASCADE rendering + X11 client libraries
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
+    libgl1-mesa-dri \
     libglu1-mesa \
+    mesa-utils \
+    libegl1-mesa \
+    libgbm1 \
+    libosmesa6 \
+    libosmesa6-dev \
     libx11-6 \
     libgtk-3-0 \
     libxrender1 \
@@ -46,6 +52,11 @@ RUN chmod +x entrypoint.sh
 
 # DISPLAY will be set via docker-compose environment
 ENV DISPLAY=:1
+
+# Force software OpenGL rendering for container compatibility
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_GL_VERSION_OVERRIDE=3.3
+ENV GALLIUM_DRIVER=llvmpipe
 
 # Use conda + entrypoint script
 ENTRYPOINT ["./entrypoint.sh"]
