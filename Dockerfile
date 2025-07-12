@@ -10,20 +10,33 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libgl1-mesa-dri \
+    libgl1-mesa-dev \
     libglu1-mesa \
+    libglu1-mesa-dev \
     mesa-utils \
+    mesa-common-dev \
     libegl1-mesa \
+    libegl1-mesa-dev \
     libgbm1 \
+    libgbm-dev \
     libosmesa6 \
     libosmesa6-dev \
-    libx11-6 \
+    libglapi-mesa \
+    libgl1-mesa-swx11 \
+    libxss1 \
+    libgconf-2-4 \
+    libxtst6 \
+    libxrandr2 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libatk1.0-0 \
+    libcairo-gobject2 \
     libgtk-3-0 \
+    libgdk-pixbuf2.0-0 \
+    libx11-6 \
     libxrender1 \
     libxext6 \
-    libgdk-pixbuf2.0-0 \
     libxi6 \
-    libxrandr2 \
-    libxss1 \
     libxcursor1 \
     libxcomposite1 \
     libxdamage1 \
@@ -33,6 +46,7 @@ RUN apt-get update && apt-get install -y \
     x11-apps \
     x11-utils \
     xauth \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy environment first to leverage Docker cache
@@ -55,8 +69,16 @@ ENV DISPLAY=:1
 
 # Force software OpenGL rendering for container compatibility
 ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV LIBGL_ALWAYS_INDIRECT=1
 ENV MESA_GL_VERSION_OVERRIDE=3.3
+ENV MESA_GLSL_VERSION_OVERRIDE=330
 ENV GALLIUM_DRIVER=llvmpipe
+ENV GALLIUM_HUD=simple,fps
+ENV MESA_LOADER_DRIVER_OVERRIDE=swrast
+ENV LIBGL_DEBUG=verbose
+ENV EGL_SOFTWARE=1
+ENV __GLX_VENDOR_LIBRARY_NAME=mesa
+ENV OPENGL_DRIVER=swrast
 
 # Use conda + entrypoint script
 ENTRYPOINT ["./entrypoint.sh"]
