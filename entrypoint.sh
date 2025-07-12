@@ -34,4 +34,15 @@ else
 fi
 
 echo "=== Starting Flask Application ==="
+Xvfb :1 -screen 0 1280x800x24 +extension GLX +render -noreset &
+export DISPLAY=:1
+
+echo "Checking GLX availability:"
+if glxinfo -display $DISPLAY | grep -q "OpenGL renderer string"; then
+  echo "✓ GLX is working"
+else
+  echo "✗ GLX is NOT working"
+fi
+
+
 python app.py
