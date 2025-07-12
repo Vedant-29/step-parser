@@ -825,7 +825,6 @@ def health_check():
             'render': '/render-step',
             'batch_render': '/render-step-batch',
             'test_rendering': '/test-rendering',
-            'test_opengl': '/test-opengl',
             'test_opencascade': '/test-opencascade'
         }
     })
@@ -839,27 +838,6 @@ def test_rendering():
         print(f"[test-rendering] DISPLAY env var: {os.environ.get('DISPLAY', 'Not set')}", flush=True)
         print(f"[test-rendering] XAUTHORITY env var: {os.environ.get('XAUTHORITY', 'Not set')}", flush=True)
         
-        # Test OpenGL environment first
-        print("[test-rendering] Testing OpenGL environment...", flush=True)
-        opengl_info = {}
-        try:
-            import subprocess
-            result = subprocess.run(['glxinfo'], capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                opengl_info['glxinfo'] = 'Available'
-                # Extract key OpenGL info
-                for line in result.stdout.split('\n'):
-                    if 'OpenGL renderer' in line:
-                        opengl_info['renderer'] = line.strip()
-                    elif 'OpenGL version' in line:
-                        opengl_info['version'] = line.strip()
-            else:
-                opengl_info['glxinfo'] = f'Failed: {result.stderr}'
-        except Exception as e:
-            opengl_info['glxinfo'] = f'Exception: {str(e)}'
-        
-        print(f"[test-rendering] OpenGL info: {opengl_info}", flush=True)
-        
         # Import the viewer class
         print("[test-rendering] Importing Viewer3d...", flush=True)
         from OCC.Display.OCCViewer import Viewer3d
@@ -870,37 +848,19 @@ def test_rendering():
         test_viewer = Viewer3d()
         print("[test-rendering] Viewer3d instance created successfully", flush=True)
         
-        # Try to create with timeout to avoid hanging
-        print("[test-rendering] Calling Create() method with timeout...", flush=True)
-        import signal
+        print("[test-rendering] Calling Create() method...", flush=True)
+        test_viewer.Create()
+        print("[test-rendering] Create() method completed successfully", flush=True)
         
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Create() method timed out")
-        
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(30)  # 30 second timeout
-        
-        try:
-            test_viewer.Create()
-            signal.alarm(0)  # Cancel timeout
-            print("[test-rendering] Create() method completed successfully", flush=True)
-            
-            print("[test-rendering] Setting size to 256x256...", flush=True)
-            test_viewer.SetSize(256, 256)
-            print("[test-rendering] Size set successfully", flush=True)
-            
-        except TimeoutError:
-            print("[test-rendering] Create() method timed out", flush=True)
-            raise
-        finally:
-            signal.alarm(0)  # Always cancel timeout
+        print("[test-rendering] Setting size to 256x256...", flush=True)
+        test_viewer.SetSize(256, 256)
+        print("[test-rendering] Size set successfully", flush=True)
         
         print("[test-rendering] Test completed successfully!", flush=True)
         return jsonify({
             'status': 'success',
             'message': 'Rendering system is working correctly',
             'display': os.environ.get('DISPLAY', 'Not set'),
-            'opengl_info': opengl_info,
             'xvfb_status': 'OK'
         })
     except Exception as e:
@@ -911,62 +871,7 @@ def test_rendering():
             'status': 'error',
             'message': f'Rendering system error: {str(e)}',
             'display': os.environ.get('DISPLAY', 'Not set'),
-            'opengl_info': opengl_info if 'opengl_info' in locals() else {},
             'xvfb_status': 'Failed'
-        }), 500
-
-
-@app.route('/test-opengl', methods=['GET'])
-def test_opengl():
-    """Test basic OpenGL functionality without OpenCASCADE"""
-    try:
-        print("[test-opengl] Starting OpenGL test...", flush=True)
-        
-        # Test system OpenGL info
-        import subprocess
-        
-        print("[test-opengl] Testing glxinfo...", flush=True)
-        result = subprocess.run(['glxinfo', '-B'], capture_output=True, text=True, timeout=10)
-        glx_info = result.stdout if result.returncode == 0 else f"Error: {result.stderr}"
-        
-        print("[test-opengl] Testing mesa info...", flush=True)
-        mesa_info = {}
-        try:
-            result = subprocess.run(['mesa-info'], capture_output=True, text=True, timeout=5)
-            mesa_info['mesa-info'] = result.stdout if result.returncode == 0 else "Not available"
-        except:
-            mesa_info['mesa-info'] = "Command not found"
-        
-        # Test Python OpenGL
-        print("[test-opengl] Testing Python OpenGL imports...", flush=True)
-        try:
-            import OpenGL
-            from OpenGL import GL
-            opengl_version = OpenGL.version.__version__
-            print(f"[test-opengl] PyOpenGL version: {opengl_version}", flush=True)
-        except ImportError as e:
-            print(f"[test-opengl] PyOpenGL not available: {e}", flush=True)
-            opengl_version = "Not available"
-        
-        return jsonify({
-            'status': 'success',
-            'glx_info': glx_info,
-            'mesa_info': mesa_info,
-            'pyopengl_version': opengl_version,
-            'environment_vars': {
-                'LIBGL_ALWAYS_SOFTWARE': os.environ.get('LIBGL_ALWAYS_SOFTWARE'),
-                'MESA_GL_VERSION_OVERRIDE': os.environ.get('MESA_GL_VERSION_OVERRIDE'),
-                'GALLIUM_DRIVER': os.environ.get('GALLIUM_DRIVER')
-            }
-        })
-        
-    except Exception as e:
-        print(f"[test-opengl] Exception: {type(e).__name__}: {str(e)}", flush=True)
-        import traceback
-        print(f"[test-opengl] Traceback:\n{traceback.format_exc()}", flush=True)
-        return jsonify({
-            'status': 'error',
-            'message': f'OpenGL test error: {str(e)}'
         }), 500
 
 
