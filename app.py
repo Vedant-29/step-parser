@@ -823,7 +823,9 @@ def health_check():
         'endpoints': {
             'parse': '/parse-step',
             'render': '/render-step',
-            'batch_render': '/render-step-batch'
+            'batch_render': '/render-step-batch',
+            'test_rendering': '/test-rendering',
+            'test_opencascade': '/test-opencascade'
         }
     })
 
@@ -832,11 +834,29 @@ def health_check():
 def test_rendering():
     """Test the rendering capability with Xvfb"""
     try:
-        # Test if we can create a viewer (this will fail if X11/Xvfb is not working)
-        test_viewer = Viewer3d()
-        test_viewer.Create()
-        test_viewer.SetSize(256, 256)
+        print("[test-rendering] Starting test...", flush=True)
+        print(f"[test-rendering] DISPLAY env var: {os.environ.get('DISPLAY', 'Not set')}", flush=True)
+        print(f"[test-rendering] XAUTHORITY env var: {os.environ.get('XAUTHORITY', 'Not set')}", flush=True)
         
+        # Import the viewer class
+        print("[test-rendering] Importing Viewer3d...", flush=True)
+        from OCC.Display.OCCViewer import Viewer3d
+        print("[test-rendering] Viewer3d imported successfully", flush=True)
+        
+        # Test if we can create a viewer (this will fail if X11/Xvfb is not working)
+        print("[test-rendering] Creating Viewer3d instance...", flush=True)
+        test_viewer = Viewer3d()
+        print("[test-rendering] Viewer3d instance created successfully", flush=True)
+        
+        print("[test-rendering] Calling Create() method...", flush=True)
+        test_viewer.Create()
+        print("[test-rendering] Create() method completed successfully", flush=True)
+        
+        print("[test-rendering] Setting size to 256x256...", flush=True)
+        test_viewer.SetSize(256, 256)
+        print("[test-rendering] Size set successfully", flush=True)
+        
+        print("[test-rendering] Test completed successfully!", flush=True)
         return jsonify({
             'status': 'success',
             'message': 'Rendering system is working correctly',
@@ -844,11 +864,63 @@ def test_rendering():
             'xvfb_status': 'OK'
         })
     except Exception as e:
+        print(f"[test-rendering] Exception caught: {type(e).__name__}: {str(e)}", flush=True)
+        import traceback
+        print(f"[test-rendering] Full traceback:\n{traceback.format_exc()}", flush=True)
         return jsonify({
             'status': 'error',
             'message': f'Rendering system error: {str(e)}',
             'display': os.environ.get('DISPLAY', 'Not set'),
             'xvfb_status': 'Failed'
+        }), 500
+
+
+@app.route('/test-opencascade', methods=['GET'])
+def test_opencascade():
+    """Test basic OpenCASCADE functionality without viewer"""
+    try:
+        print("[test-opencascade] Starting OpenCASCADE test...", flush=True)
+        
+        # Test basic imports
+        print("[test-opencascade] Testing basic imports...", flush=True)
+        from OCC.Core.gp import gp_Pnt, gp_Dir
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+        print("[test-opencascade] Basic imports successful", flush=True)
+        
+        # Test creating a simple geometry
+        print("[test-opencascade] Creating simple geometry...", flush=True)
+        point = gp_Pnt(0.0, 0.0, 0.0)
+        vertex = BRepBuilderAPI_MakeVertex(point)
+        shape = vertex.Shape()
+        print("[test-opencascade] Simple geometry created successfully", flush=True)
+        
+        # Test STEP reader (without file)
+        print("[test-opencascade] Testing STEP reader creation...", flush=True)
+        from OCC.Core.STEPControl import STEPControl_Reader
+        reader = STEPControl_Reader()
+        print("[test-opencascade] STEP reader created successfully", flush=True)
+        
+        # Test topology utils
+        print("[test-opencascade] Testing topology utils...", flush=True)
+        from OCC.Extend.TopologyUtils import TopologyExplorer
+        topo = TopologyExplorer(shape)
+        vertices = list(topo.vertices())
+        print(f"[test-opencascade] Found {len(vertices)} vertices", flush=True)
+        
+        print("[test-opencascade] All OpenCASCADE tests passed!", flush=True)
+        return jsonify({
+            'status': 'success',
+            'message': 'Basic OpenCASCADE functionality working',
+            'tests_passed': ['imports', 'geometry_creation', 'step_reader', 'topology']
+        })
+        
+    except Exception as e:
+        print(f"[test-opencascade] Exception: {type(e).__name__}: {str(e)}", flush=True)
+        import traceback
+        print(f"[test-opencascade] Traceback:\n{traceback.format_exc()}", flush=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'OpenCASCADE error: {str(e)}'
         }), 500
 
 
