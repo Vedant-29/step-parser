@@ -848,6 +848,7 @@ def test_rendering():
         test_viewer = Viewer3d()
         print("[test-rendering] Viewer3d instance created successfully", flush=True)
         
+        print(">>> DISPLAY:", os.environ.get("DISPLAY"))
         print("[test-rendering] Calling Create() method...", flush=True)
         test_viewer.Create()
         print("[test-rendering] Create() method completed successfully", flush=True)
