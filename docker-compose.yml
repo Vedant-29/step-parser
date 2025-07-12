@@ -10,22 +10,26 @@ services:
       - .:/app
       # Mount X11 socket for display sharing
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Optional: Mount X11 authentication (if needed)
-      - /home/ubuntu/.Xauthority:/root/.Xauthority:rw
+      # Mount X11 authentication if it exists
+      - /root/.Xauthority:/root/.Xauthority:ro
     working_dir: /app
+    network_mode: host
     ports:
       - "5001:5001"
     expose:
       - "5001"
     environment:
       # Set DISPLAY to match your host's DISPLAY
-      - DISPLAY=${DISPLAY:-:1}
+      - DISPLAY=:1
       # Allow X11 connections
       - XAUTHORITY=/root/.Xauthority
     networks:
       - cad-net
-    # Allow access to host's display
-    privileged: true
+    # Add these for X11 access
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
 
 networks:
   cad-net:

@@ -188,3 +188,5 @@ docker-compose up -d
 ### 3. Access the CAD API
 
 The CAD application will be available at:
+
+docker exec -it cad-runner bash

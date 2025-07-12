@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y \
     libxinerama1 \
     libxcb1 \
     x11-apps \
+    x11-utils \
+    xauth \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy environment first to leverage Docker cache
