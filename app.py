@@ -832,48 +832,182 @@ def health_check():
 
 @app.route('/test-rendering', methods=['GET'])
 def test_rendering():
-    """Test the rendering capability with Xvfb"""
-    try:
-        print("[test-rendering] Starting test...", flush=True)
-        print(f"[test-rendering] DISPLAY env var: {os.environ.get('DISPLAY', 'Not set')}", flush=True)
-        print(f"[test-rendering] XAUTHORITY env var: {os.environ.get('XAUTHORITY', 'Not set')}", flush=True)
-        
-        # Import the viewer class
-        print("[test-rendering] Importing Viewer3d...", flush=True)
-        from OCC.Display.OCCViewer import Viewer3d
-        print("[test-rendering] Viewer3d imported successfully", flush=True)
-        
-        # Test if we can create a viewer (this will fail if X11/Xvfb is not working)
-        print("[test-rendering] Creating Viewer3d instance...", flush=True)
-        test_viewer = Viewer3d()
-        print("[test-rendering] Viewer3d instance created successfully", flush=True)
-        
-        print(">>> DISPLAY:", os.environ.get("DISPLAY"))
-        print("[test-rendering] Calling Create() method...", flush=True)
-        test_viewer.Create()
-        print("[test-rendering] Create() method completed successfully", flush=True)
-        
-        print("[test-rendering] Setting size to 256x256...", flush=True)
-        test_viewer.SetSize(256, 256)
-        print("[test-rendering] Size set successfully", flush=True)
-        
-        print("[test-rendering] Test completed successfully!", flush=True)
-        return jsonify({
-            'status': 'success',
-            'message': 'Rendering system is working correctly',
+    """Test the rendering capability with detailed diagnostics"""
+    test_results = {
+        'status': 'unknown',
+        'tests': {},
+        'environment': {
             'display': os.environ.get('DISPLAY', 'Not set'),
-            'xvfb_status': 'OK'
-        })
+            'xauthority': os.environ.get('XAUTHORITY', 'Not set')
+        }
+    }
+    
+    try:
+        print("[test-rendering] Starting comprehensive test...", flush=True)
+        
+        # Test 1: Check X11 connection
+        print("[test-rendering] Testing X11 connection...", flush=True)
+        try:
+            import subprocess
+            result = subprocess.run(['xdpyinfo'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                test_results['tests']['x11_connection'] = {
+                    'status': 'success',
+                    'message': 'X11 server accessible'
+                }
+                print("[test-rendering] X11 connection test passed", flush=True)
+            else:
+                test_results['tests']['x11_connection'] = {
+                    'status': 'failed',
+                    'message': f'xdpyinfo failed: {result.stderr}'
+                }
+                print(f"[test-rendering] X11 connection test failed: {result.stderr}", flush=True)
+        except Exception as e:
+            test_results['tests']['x11_connection'] = {
+                'status': 'error',
+                'message': f'X11 test error: {str(e)}'
+            }
+            print(f"[test-rendering] X11 connection test error: {str(e)}", flush=True)
+        
+        # Test 2: Test OpenGL availability
+        print("[test-rendering] Testing OpenGL availability...", flush=True)
+        try:
+            import subprocess
+            result = subprocess.run(['glxinfo'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                test_results['tests']['opengl_availability'] = {
+                    'status': 'success',
+                    'message': 'OpenGL info accessible'
+                }
+                print("[test-rendering] OpenGL availability test passed", flush=True)
+            else:
+                test_results['tests']['opengl_availability'] = {
+                    'status': 'failed',
+                    'message': f'glxinfo failed: {result.stderr}'
+                }
+                print(f"[test-rendering] OpenGL availability test failed: {result.stderr}", flush=True)
+        except Exception as e:
+            test_results['tests']['opengl_availability'] = {
+                'status': 'error',
+                'message': f'OpenGL test error: {str(e)}'
+            }
+            print(f"[test-rendering] OpenGL availability test error: {str(e)}", flush=True)
+        
+        # Test 3: Import OpenCASCADE viewer
+        print("[test-rendering] Testing OpenCASCADE viewer import...", flush=True)
+        try:
+            from OCC.Display.OCCViewer import Viewer3d
+            test_results['tests']['occ_viewer_import'] = {
+                'status': 'success',
+                'message': 'Viewer3d imported successfully'
+            }
+            print("[test-rendering] OpenCASCADE viewer import successful", flush=True)
+        except Exception as e:
+            test_results['tests']['occ_viewer_import'] = {
+                'status': 'error',
+                'message': f'Import error: {str(e)}'
+            }
+            print(f"[test-rendering] OpenCASCADE viewer import failed: {str(e)}", flush=True)
+            return jsonify(test_results), 500
+        
+        # Test 4: Create viewer instance
+        print("[test-rendering] Testing viewer instance creation...", flush=True)
+        try:
+            test_viewer = Viewer3d()
+            test_results['tests']['viewer_instance'] = {
+                'status': 'success',
+                'message': 'Viewer3d instance created'
+            }
+            print("[test-rendering] Viewer instance created successfully", flush=True)
+        except Exception as e:
+            test_results['tests']['viewer_instance'] = {
+                'status': 'error',
+                'message': f'Instance creation error: {str(e)}'
+            }
+            print(f"[test-rendering] Viewer instance creation failed: {str(e)}", flush=True)
+            return jsonify(test_results), 500
+        
+        # Test 5: Try different initialization approaches
+        print("[test-rendering] Testing viewer initialization approaches...", flush=True)
+        
+        # Approach 1: Try with explicit parameters
+        try:
+            print("[test-rendering] Trying Create() with explicit parameters...", flush=True)
+            test_viewer.Create(
+                window_handle=None,
+                parent=None,
+                create_default_lights=False,  # Disable lights first
+                draw_face_boundaries=False,   # Disable boundary drawing
+                phong_shading=False,         # Disable phong shading
+                display_glinfo=False         # Disable GL info display
+            )
+            test_results['tests']['viewer_create_minimal'] = {
+                'status': 'success',
+                'message': 'Minimal Create() succeeded'
+            }
+            print("[test-rendering] Minimal Create() succeeded", flush=True)
+            
+            # Try setting size
+            test_viewer.SetSize(256, 256)
+            test_results['tests']['viewer_set_size'] = {
+                'status': 'success',
+                'message': 'SetSize() succeeded'
+            }
+            print("[test-rendering] SetSize() succeeded", flush=True)
+            
+            test_results['status'] = 'success'
+            return jsonify(test_results)
+            
+        except Exception as e:
+            test_results['tests']['viewer_create_minimal'] = {
+                'status': 'error',
+                'message': f'Minimal Create() failed: {str(e)}'
+            }
+            print(f"[test-rendering] Minimal Create() failed: {str(e)}", flush=True)
+            import traceback
+            print(f"[test-rendering] Traceback:\n{traceback.format_exc()}", flush=True)
+        
+        # Approach 2: Try alternative viewer creation
+        try:
+            print("[test-rendering] Trying alternative viewer creation...", flush=True)
+            # Try creating a new viewer instance
+            alt_viewer = Viewer3d()
+            
+            # Try calling InitOffscreen directly
+            print("[test-rendering] Trying InitOffscreen directly...", flush=True)
+            alt_viewer.InitOffscreen(256, 256)
+            
+            test_results['tests']['viewer_init_offscreen'] = {
+                'status': 'success',
+                'message': 'InitOffscreen() succeeded'
+            }
+            print("[test-rendering] InitOffscreen() succeeded", flush=True)
+            
+            test_results['status'] = 'success'
+            return jsonify(test_results)
+            
+        except Exception as e:
+            test_results['tests']['viewer_init_offscreen'] = {
+                'status': 'error',
+                'message': f'InitOffscreen() failed: {str(e)}'
+            }
+            print(f"[test-rendering] InitOffscreen() failed: {str(e)}", flush=True)
+            import traceback
+            print(f"[test-rendering] Traceback:\n{traceback.format_exc()}", flush=True)
+        
+        # If all approaches failed
+        test_results['status'] = 'failed'
+        test_results['message'] = 'All viewer initialization approaches failed'
+        return jsonify(test_results), 500
+        
     except Exception as e:
-        print(f"[test-rendering] Exception caught: {type(e).__name__}: {str(e)}", flush=True)
+        print(f"[test-rendering] Unexpected error: {type(e).__name__}: {str(e)}", flush=True)
         import traceback
         print(f"[test-rendering] Full traceback:\n{traceback.format_exc()}", flush=True)
-        return jsonify({
-            'status': 'error',
-            'message': f'Rendering system error: {str(e)}',
-            'display': os.environ.get('DISPLAY', 'Not set'),
-            'xvfb_status': 'Failed'
-        }), 500
+        
+        test_results['status'] = 'error'
+        test_results['message'] = f'Unexpected error: {str(e)}'
+        return jsonify(test_results), 500
 
 
 @app.route('/test-opencascade', methods=['GET'])
