@@ -20,6 +20,6 @@ dependencies:
   - pandas
   - plyfile
   - py7zr
-  - pillow  # For image processing if needed
+  - pillow  # For image prx`ocessing if needed
   - pip:
       - matplotlib

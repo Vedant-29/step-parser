@@ -489,6 +489,127 @@ def extract_vertex_data(vertex):
     return [pnt.X(), pnt.Y(), pnt.Z()]
 
 
+def generate_face_grid_points(face, u_samples=32, v_samples=32):
+    """Generate a uniform grid of points on a face surface"""
+    try:
+        from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+        from OCC.Core.GeomAbs import GeomAbs_BSplineSurface, GeomAbs_BezierSurface
+        
+        # Get the surface from the face
+        surf_adaptor = BRepAdaptor_Surface(face, True)
+        
+        # Get parameter bounds
+        u_min = surf_adaptor.FirstUParameter()
+        u_max = surf_adaptor.LastUParameter()
+        v_min = surf_adaptor.FirstVParameter()
+        v_max = surf_adaptor.LastVParameter()
+        
+        # Generate grid points
+        grid_points = []
+        
+        for i in range(u_samples):
+            row = []
+            u = u_min + (u_max - u_min) * i / (u_samples - 1) if u_samples > 1 else (u_min + u_max) / 2
+            
+            for j in range(v_samples):
+                v = v_min + (v_max - v_min) * j / (v_samples - 1) if v_samples > 1 else (v_min + v_max) / 2
+                
+                try:
+                    # Get point on surface
+                    pnt = surf_adaptor.Value(u, v)
+                    row.append([pnt.X(), pnt.Y(), pnt.Z()])
+                except:
+                    # Fallback for parameter issues
+                    try:
+                        # Try middle parameter if edge case
+                        u_safe = max(u_min, min(u_max, u))
+                        v_safe = max(v_min, min(v_max, v))
+                        pnt = surf_adaptor.Value(u_safe, v_safe)
+                        row.append([pnt.X(), pnt.Y(), pnt.Z()])
+                    except:
+                        # Last resort: use face center or approximate
+                        row.append([0.0, 0.0, 0.0])
+            
+            grid_points.append(row)
+        
+        return grid_points
+        
+    except Exception as e:
+        # If surface evaluation fails, try mesh-based approach
+        try:
+            return generate_face_grid_from_mesh(face, u_samples, v_samples)
+        except:
+            # Return None if all methods fail
+            return None
+
+
+def generate_face_grid_from_mesh(face, u_samples=32, v_samples=32):
+    """Generate grid points from face triangulation as fallback"""
+    try:
+        # Mesh the face
+        BRepMesh_IncrementalMesh(face, 0.01)
+        
+        loc = TopLoc_Location()
+        triangulation = BRep_Tool.Triangulation(face, loc)
+        
+        if not triangulation:
+            return None
+        
+        nodes = triangulation.Nodes()
+        
+        # Extract all mesh vertices
+        mesh_points = []
+        for i in range(nodes.Length()):
+            node = nodes.Value(i + 1)
+            mesh_points.append([node.X(), node.Y(), node.Z()])
+        
+        if len(mesh_points) < 4:  # Need at least 4 points for interpolation
+            return None
+        
+        mesh_points = np.array(mesh_points)
+        
+        # Create a regular grid by interpolating from mesh points
+        # This is a simplified approach - for production use more sophisticated surface fitting
+        
+        # Get bounding box of mesh points
+        min_bounds = np.min(mesh_points, axis=0)
+        max_bounds = np.max(mesh_points, axis=0)
+        
+        # Find the two dominant dimensions (ignore the smallest dimension for 2D parameterization)
+        ranges = max_bounds - min_bounds
+        sorted_dims = np.argsort(ranges)
+        dim1, dim2 = sorted_dims[1], sorted_dims[2]  # Use the two largest dimensions
+        
+        # Create grid in the 2D parameter space
+        grid_points = []
+        
+        for i in range(u_samples):
+            row = []
+            u = i / (u_samples - 1) if u_samples > 1 else 0.5
+            
+            for j in range(v_samples):
+                v = j / (v_samples - 1) if v_samples > 1 else 0.5
+                
+                # Map (u,v) to the face's parameter space
+                param_point = np.zeros(3)
+                param_point[dim1] = min_bounds[dim1] + u * ranges[dim1]
+                param_point[dim2] = min_bounds[dim2] + v * ranges[dim2]
+                
+                # Find closest mesh point and use it (simple nearest neighbor)
+                distances = np.linalg.norm(mesh_points[:, [dim1, dim2]] - param_point[[dim1, dim2]], axis=1)
+                closest_idx = np.argmin(distances)
+                closest_point = mesh_points[closest_idx]
+                
+                row.append([closest_point[0], closest_point[1], closest_point[2]])
+            
+            grid_points.append(row)
+        
+        return grid_points
+        
+    except Exception as e:
+        return None
+
+
 @app.route('/parse-step', methods=['POST'])
 def parse_step():
     file = request.files.get('file')
@@ -512,94 +633,222 @@ def parse_step():
         # Create topology explorer
         topo = Topo(shape)
 
-        # Extract faces with detailed information
-        faces_data = []
-        for face in topo.faces():
-            face_info = extract_face_data(face)
-            if face_info:
-                # Add topological information
-                face_info['edges'] = []
-                for edge in topo.edges_from_face(face):
-                    edge_data = extract_edge_data(edge)
-                    if edge_data:
-                        face_info['edges'].append(edge_data)
-                
-                face_info['wires'] = []
-                for wire in topo.wires_from_face(face):
-                    wire_info = {
-                        'ordered_edges': [],
-                        'ordered_vertices': []
-                    }
-                    # Get ordered edges and vertices from wire
-                    for edge in topo.ordered_edges_from_wire(wire):
-                        edge_data = extract_edge_data(edge)
-                        if edge_data:
-                            wire_info['ordered_edges'].append(edge_data)
-                    
-                    for vertex in topo.ordered_vertices_from_wire(wire):
-                        vertex_data = extract_vertex_data(vertex)
-                        wire_info['ordered_vertices'].append(vertex_data)
-                    
-                    face_info['wires'].append(wire_info)
-                
-                faces_data.append(face_info)
+        # First pass: Extract all unique vertices, edges, and faces with hash-based tracking
+        all_vertices = {}  # hash -> (index, data)
+        all_edges = {}     # hash -> (index, data) 
+        all_faces = {}     # hash -> (index, data)
+        
+        vertex_counter = 0
+        edge_counter = 0
+        face_counter = 0
 
-        # Extract edges
-        edges_data = []
-        for edge in topo.edges():
-            edge_info = extract_edge_data(edge)
-            if edge_info:
-                # Add vertex information
-                edge_info['vertices'] = []
-                for vertex in topo.vertices_from_edge(edge):
-                    vertex_data = extract_vertex_data(vertex)
-                    edge_info['vertices'].append(vertex_data)
-                edges_data.append(edge_info)
-
-        # Extract vertices
-        vertices_data = []
+        # Build vertices mapping
         for vertex in topo.vertices():
-            vertex_data = extract_vertex_data(vertex)
-            vertices_data.append(vertex_data)
+            vertex_hash = vertex.__hash__()
+            if vertex_hash not in all_vertices:
+                vertex_data = extract_vertex_data(vertex)
+                all_vertices[vertex_hash] = (vertex_counter, vertex_data)
+                vertex_counter += 1
 
-        # Extract higher-level topology
+        # Build edges mapping
+        for edge in topo.edges():
+            edge_hash = edge.__hash__()
+            if edge_hash not in all_edges:
+                edge_data = extract_edge_data(edge)
+                if edge_data:
+                    # Get vertex indices for this edge
+                    edge_vertices = list(topo.vertices_from_edge(edge))
+                    vertex_indices = []
+                    for v in edge_vertices:
+                        v_hash = v.__hash__()
+                        if v_hash in all_vertices:
+                            vertex_indices.append(all_vertices[v_hash][0])
+                    
+                    edge_data['vertex_indices'] = vertex_indices
+                    all_edges[edge_hash] = (edge_counter, edge_data)
+                    edge_counter += 1
+
+        # Build faces mapping with edge adjacency
+        for face in topo.faces():
+            face_hash = face.__hash__()
+            if face_hash not in all_faces:
+                face_data = extract_face_data(face)
+                if face_data:
+                    # Get edge indices for this face
+                    face_edges = list(topo.edges_from_face(face))
+                    edge_indices = []
+                    for e in face_edges:
+                        e_hash = e.__hash__()
+                        if e_hash in all_edges:
+                            edge_indices.append(all_edges[e_hash][0])
+                    
+                    face_data['edge_indices'] = edge_indices
+                    
+                    # Get wire information with ordered connectivity
+                    wires_data = []
+                    for wire in topo.wires_from_face(face):
+                        wire_info = {
+                            'ordered_edge_indices': [],
+                            'ordered_vertex_indices': []
+                        }
+                        
+                        # Get ordered edges from wire
+                        ordered_edges = list(topo.ordered_edges_from_wire(wire))
+                        for edge in ordered_edges:
+                            e_hash = edge.__hash__()
+                            if e_hash in all_edges:
+                                wire_info['ordered_edge_indices'].append(all_edges[e_hash][0])
+                        
+                        # Get ordered vertices from wire
+                        ordered_vertices = list(topo.ordered_vertices_from_wire(wire))
+                        for vertex in ordered_vertices:
+                            v_hash = vertex.__hash__()
+                            if v_hash in all_vertices:
+                                wire_info['ordered_vertex_indices'].append(all_vertices[v_hash][0])
+                        
+                        wires_data.append(wire_info)
+                    
+                    face_data['wires'] = wires_data
+                    
+                    # Optional: Generate 32x32 grid points for surface reconstruction
+                    # This can be added later if needed for specific surface types
+                    try:
+                        grid_points = generate_face_grid_points(face, 32, 32)
+                        if grid_points is not None:
+                            face_data['grid_points'] = grid_points
+                    except Exception as e:
+                        # Grid generation failed, continue without it
+                        print(f"Warning: Could not generate grid points for face: {e}")
+                    
+                    all_faces[face_hash] = (face_counter, face_data)
+                    face_counter += 1
+
+        # Convert to arrays sorted by index
+        vertices_data = [None] * len(all_vertices)
+        for vertex_hash, (index, data) in all_vertices.items():
+            vertices_data[index] = data
+
+        edges_data = [None] * len(all_edges)
+        for edge_hash, (index, data) in all_edges.items():
+            edges_data[index] = data
+
+        faces_data = [None] * len(all_faces)
+        for face_hash, (index, data) in all_faces.items():
+            faces_data[index] = data
+
+        # Extract higher-level topology with proper indexing
         solids_data = []
         for solid in topo.solids():
+            solid_faces = list(topo._loop_topo(TopAbs_FACE, solid))
+            solid_edges = list(topo._loop_topo(TopAbs_EDGE, solid))
+            solid_vertices = list(topo._loop_topo(TopAbs_VERTEX, solid))
+            
+            # Map to indices
+            face_indices = []
+            for f in solid_faces:
+                f_hash = f.__hash__()
+                if f_hash in all_faces:
+                    face_indices.append(all_faces[f_hash][0])
+            
+            edge_indices = []
+            for e in solid_edges:
+                e_hash = e.__hash__()
+                if e_hash in all_edges:
+                    edge_indices.append(all_edges[e_hash][0])
+            
+            vertex_indices = []
+            for v in solid_vertices:
+                v_hash = v.__hash__()
+                if v_hash in all_vertices:
+                    vertex_indices.append(all_vertices[v_hash][0])
+            
             solid_info = {
-                'faces_count': len(list(topo._loop_topo(TopAbs_FACE, solid))),
-                'edges_count': len(list(topo._loop_topo(TopAbs_EDGE, solid))),
-                'vertices_count': len(list(topo._loop_topo(TopAbs_VERTEX, solid)))
+                'face_indices': face_indices,
+                'edge_indices': edge_indices,
+                'vertex_indices': vertex_indices,
+                'faces_count': len(face_indices),
+                'edges_count': len(edge_indices),
+                'vertices_count': len(vertex_indices)
             }
             solids_data.append(solid_info)
 
         shells_data = []
         for shell in topo.shells():
+            shell_faces = list(topo._loop_topo(TopAbs_FACE, shell))
+            shell_edges = list(topo._loop_topo(TopAbs_EDGE, shell))
+            shell_vertices = list(topo._loop_topo(TopAbs_VERTEX, shell))
+            
+            # Map to indices
+            face_indices = []
+            for f in shell_faces:
+                f_hash = f.__hash__()
+                if f_hash in all_faces:
+                    face_indices.append(all_faces[f_hash][0])
+            
+            edge_indices = []
+            for e in shell_edges:
+                e_hash = e.__hash__()
+                if e_hash in all_edges:
+                    edge_indices.append(all_edges[e_hash][0])
+            
+            vertex_indices = []
+            for v in shell_vertices:
+                v_hash = v.__hash__()
+                if v_hash in all_vertices:
+                    vertex_indices.append(all_vertices[v_hash][0])
+            
             shell_info = {
-                'faces_count': len(list(topo._loop_topo(TopAbs_FACE, shell))),
-                'edges_count': len(list(topo._loop_topo(TopAbs_EDGE, shell))),
-                'vertices_count': len(list(topo._loop_topo(TopAbs_VERTEX, shell)))
+                'face_indices': face_indices,
+                'edge_indices': edge_indices,
+                'vertex_indices': vertex_indices,
+                'faces_count': len(face_indices),
+                'edges_count': len(edge_indices),
+                'vertices_count': len(vertex_indices)
             }
             shells_data.append(shell_info)
 
         wires_data = []
         for wire in topo.wires():
+            wire_edges = list(topo._loop_topo(TopAbs_EDGE, wire))
+            wire_vertices = list(topo._loop_topo(TopAbs_VERTEX, wire))
+            
+            # Get ordered topology
+            ordered_edges = list(topo.ordered_edges_from_wire(wire))
+            ordered_vertices = list(topo.ordered_vertices_from_wire(wire))
+            
+            # Map to indices
+            edge_indices = []
+            for e in wire_edges:
+                e_hash = e.__hash__()
+                if e_hash in all_edges:
+                    edge_indices.append(all_edges[e_hash][0])
+            
+            vertex_indices = []
+            for v in wire_vertices:
+                v_hash = v.__hash__()
+                if v_hash in all_vertices:
+                    vertex_indices.append(all_vertices[v_hash][0])
+            
+            ordered_edge_indices = []
+            for e in ordered_edges:
+                e_hash = e.__hash__()
+                if e_hash in all_edges:
+                    ordered_edge_indices.append(all_edges[e_hash][0])
+            
+            ordered_vertex_indices = []
+            for v in ordered_vertices:
+                v_hash = v.__hash__()
+                if v_hash in all_vertices:
+                    ordered_vertex_indices.append(all_vertices[v_hash][0])
+            
             wire_info = {
-                'ordered_edges': [],
-                'ordered_vertices': [],
-                'edges_count': len(list(topo._loop_topo(TopAbs_EDGE, wire))),
-                'vertices_count': len(list(topo._loop_topo(TopAbs_VERTEX, wire)))
+                'edge_indices': edge_indices,
+                'vertex_indices': vertex_indices,
+                'ordered_edge_indices': ordered_edge_indices,
+                'ordered_vertex_indices': ordered_vertex_indices,
+                'edges_count': len(edge_indices),
+                'vertices_count': len(vertex_indices)
             }
-            
-            # Get ordered topology from wire
-            for edge in topo.ordered_edges_from_wire(wire):
-                edge_data = extract_edge_data(edge)
-                if edge_data:
-                    wire_info['ordered_edges'].append(edge_data)
-            
-            for vertex in topo.ordered_vertices_from_wire(wire):
-                vertex_data = extract_vertex_data(vertex)
-                wire_info['ordered_vertices'].append(vertex_data)
-            
             wires_data.append(wire_info)
 
         # Cleanup uploaded file
@@ -613,6 +862,13 @@ def parse_step():
                 'wires': wires_data,
                 'shells': shells_data,
                 'solids': solids_data
+            },
+            'adjacency': {
+                'face_edge_adj': [face.get('edge_indices', []) for face in faces_data],
+                'edge_vertex_adj': [edge.get('vertex_indices', []) for edge in edges_data],
+                'face_count': len(faces_data),
+                'edge_count': len(edges_data),
+                'vertex_count': len(vertices_data)
             },
             'summary': {
                 'faces_count': len(faces_data),
@@ -629,6 +885,273 @@ def parse_step():
         if os.path.exists(filepath):
             os.remove(filepath)
         return jsonify({'error': f'Failed to parse STEP file: {str(e)}'}), 500
+
+
+@app.route('/parse-step-for-brep', methods=['POST'])
+def parse_step_for_brep():
+    """Parse STEP file and return data in format expected by BREP reconstruction"""
+    file = request.files.get('file')
+    if not file:
+        return jsonify({'error': 'No file uploaded'}), 400
+
+    # Get options from request
+    grid_size = int(request.form.get('grid_size', '32'))
+    edge_samples = int(request.form.get('edge_samples', '32'))
+
+    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(filepath)
+
+    try:
+        # Read STEP file
+        reader = STEPControl_Reader()
+        status = reader.ReadFile(filepath)
+
+        if status != IFSelect_RetDone:
+            return jsonify({'error': 'Failed to read STEP file'}), 500
+
+        reader.TransferRoot()
+        shape = reader.OneShape()
+
+        # Create topology explorer
+        topo = Topo(shape)
+
+        # Build unique topology elements with hash-based tracking
+        all_vertices = {}  # hash -> (index, data)
+        all_edges = {}     # hash -> (index, data)
+        all_faces = {}     # hash -> (index, data)
+        
+        vertex_counter = 0
+        edge_counter = 0
+        face_counter = 0
+
+        # Extract vertices
+        for vertex in topo.vertices():
+            vertex_hash = vertex.__hash__()
+            if vertex_hash not in all_vertices:
+                vertex_data = extract_vertex_data(vertex)
+                all_vertices[vertex_hash] = (vertex_counter, vertex_data)
+                vertex_counter += 1
+
+        # Extract edges with vertex connectivity
+        for edge in topo.edges():
+            edge_hash = edge.__hash__()
+            if edge_hash not in all_edges:
+                edge_data = extract_edge_data(edge)
+                if edge_data:
+                    # Get vertex indices for this edge
+                    edge_vertices = list(topo.vertices_from_edge(edge))
+                    vertex_indices = []
+                    for v in edge_vertices:
+                        v_hash = v.__hash__()
+                        if v_hash in all_vertices:
+                            vertex_indices.append(all_vertices[v_hash][0])
+                    
+                    # Ensure we have exactly edge_samples points
+                    points = edge_data['points']
+                    if len(points) != edge_samples:
+                        # Resample to get exactly edge_samples points
+                        if len(points) > 1:
+                            # Interpolate to get the right number of samples
+                            points = resample_curve_points(points, edge_samples)
+                        else:
+                            # Duplicate single point
+                            points = [points[0]] * edge_samples if points else [[0,0,0]] * edge_samples
+                    
+                    edge_info = {
+                        'points': points,  # This becomes edge_wcs
+                        'vertex_indices': vertex_indices
+                    }
+                    all_edges[edge_hash] = (edge_counter, edge_info)
+                    edge_counter += 1
+
+        # Extract faces with edge connectivity and grid points
+        for face in topo.faces():
+            face_hash = face.__hash__()
+            if face_hash not in all_faces:
+                face_data = extract_face_data(face)
+                if face_data:
+                    # Get edge indices for this face
+                    face_edges = list(topo.edges_from_face(face))
+                    edge_indices = []
+                    for e in face_edges:
+                        e_hash = e.__hash__()
+                        if e_hash in all_edges:
+                            edge_indices.append(all_edges[e_hash][0])
+                    
+                    # Generate grid points for surface reconstruction
+                    grid_points = generate_face_grid_points(face, grid_size, grid_size)
+                    if grid_points is None:
+                        # Fallback: create a flat grid from face bounds
+                        grid_points = create_fallback_face_grid(face, grid_size, grid_size)
+                    
+                    face_info = {
+                        'edge_indices': edge_indices,  # This becomes FaceEdgeAdj
+                        'grid_points': grid_points     # This becomes surf_wcs
+                    }
+                    all_faces[face_hash] = (face_counter, face_info)
+                    face_counter += 1
+
+        # Convert to the arrays expected by construct_brep function
+        
+        # 1. surf_wcs: Array of face grid points [num_faces, grid_size, grid_size, 3]
+        surf_wcs = []
+        for i in range(len(all_faces)):
+            face_info = None
+            for face_hash, (index, data) in all_faces.items():
+                if index == i:
+                    face_info = data
+                    break
+            
+            if face_info and face_info['grid_points']:
+                surf_wcs.append(face_info['grid_points'])
+            else:
+                # Fallback: create zero grid
+                surf_wcs.append([[[0,0,0] for _ in range(grid_size)] for _ in range(grid_size)])
+
+        # 2. edge_wcs: Array of edge points [num_edges, edge_samples, 3]
+        edge_wcs = []
+        for i in range(len(all_edges)):
+            edge_info = None
+            for edge_hash, (index, data) in all_edges.items():
+                if index == i:
+                    edge_info = data
+                    break
+            
+            if edge_info and edge_info['points']:
+                edge_wcs.append(edge_info['points'])
+            else:
+                # Fallback: create zero points
+                edge_wcs.append([[0,0,0] for _ in range(edge_samples)])
+
+        # 3. FaceEdgeAdj: List of edge indices for each face
+        FaceEdgeAdj = []
+        for i in range(len(all_faces)):
+            face_info = None
+            for face_hash, (index, data) in all_faces.items():
+                if index == i:
+                    face_info = data
+                    break
+            
+            if face_info:
+                FaceEdgeAdj.append(face_info['edge_indices'])
+            else:
+                FaceEdgeAdj.append([])
+
+        # 4. EdgeVertexAdj: List of vertex indices for each edge
+        EdgeVertexAdj = []
+        for i in range(len(all_edges)):
+            edge_info = None
+            for edge_hash, (index, data) in all_edges.items():
+                if index == i:
+                    edge_info = data
+                    break
+            
+            if edge_info:
+                EdgeVertexAdj.append(edge_info['vertex_indices'])
+            else:
+                EdgeVertexAdj.append([])
+
+        # 5. Vertices array
+        vertices = []
+        for i in range(len(all_vertices)):
+            vertex_data = None
+            for vertex_hash, (index, data) in all_vertices.items():
+                if index == i:
+                    vertex_data = data
+                    break
+            
+            if vertex_data:
+                vertices.append(vertex_data)
+            else:
+                vertices.append([0, 0, 0])
+
+        # Cleanup uploaded file
+        os.remove(filepath)
+
+        return jsonify({
+            'surf_wcs': surf_wcs,           # [num_faces, grid_size, grid_size, 3]
+            'edge_wcs': edge_wcs,           # [num_edges, edge_samples, 3]
+            'FaceEdgeAdj': FaceEdgeAdj,     # [num_faces] -> [edge_indices]
+            'EdgeVertexAdj': EdgeVertexAdj, # [num_edges] -> [vertex_indices]
+            'vertices': vertices,           # [num_vertices, 3]
+            'metadata': {
+                'num_faces': len(all_faces),
+                'num_edges': len(all_edges),
+                'num_vertices': len(all_vertices),
+                'grid_size': grid_size,
+                'edge_samples': edge_samples
+            }
+        })
+
+    except Exception as e:
+        # Cleanup uploaded file in case of error
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return jsonify({'error': f'Failed to parse STEP file for BREP: {str(e)}'}), 500
+
+
+def resample_curve_points(points, target_samples):
+    """Resample curve points to get exactly target_samples points"""
+    if len(points) <= 1:
+        return points
+    
+    points = np.array(points)
+    
+    # Calculate cumulative distances
+    distances = np.cumsum([0] + [np.linalg.norm(points[i+1] - points[i]) for i in range(len(points)-1)])
+    total_length = distances[-1]
+    
+    if total_length == 0:
+        # All points are the same
+        return [points[0].tolist()] * target_samples
+    
+    # Create target parameter values
+    target_params = np.linspace(0, total_length, target_samples)
+    
+    # Interpolate for each dimension
+    resampled_points = []
+    for param in target_params:
+        # Find the interpolation position
+        if param <= distances[0]:
+            resampled_points.append(points[0].tolist())
+        elif param >= distances[-1]:
+            resampled_points.append(points[-1].tolist())
+        else:
+            # Find surrounding points
+            idx = np.searchsorted(distances, param)
+            if idx >= len(distances):
+                idx = len(distances) - 1
+            
+            # Linear interpolation
+            t = (param - distances[idx-1]) / (distances[idx] - distances[idx-1]) if distances[idx] != distances[idx-1] else 0
+            interpolated = points[idx-1] + t * (points[idx] - points[idx-1])
+            resampled_points.append(interpolated.tolist())
+    
+    return resampled_points
+
+
+def create_fallback_face_grid(face, u_samples, v_samples):
+    """Create a fallback grid when surface evaluation fails"""
+    try:
+        # Get face triangulation
+        BRepMesh_IncrementalMesh(face, 0.01)
+        loc = TopLoc_Location()
+        triangulation = BRep_Tool.Triangulation(face, loc)
+        
+        if triangulation:
+            nodes = triangulation.Nodes()
+            if nodes.Length() > 0:
+                # Use first node as representative point
+                node = nodes.Value(1)
+                point = [node.X(), node.Y(), node.Z()]
+                # Create grid with all points the same (degenerate case)
+                return [[point for _ in range(v_samples)] for _ in range(u_samples)]
+        
+        # Last resort: zero grid
+        return [[[0,0,0] for _ in range(v_samples)] for _ in range(u_samples)]
+        
+    except:
+        return [[[0,0,0] for _ in range(v_samples)] for _ in range(u_samples)]
 
 
 @app.route('/render-step', methods=['POST'])
@@ -822,6 +1345,7 @@ def health_check():
         'service': 'STEP Parser & Renderer',
         'endpoints': {
             'parse': '/parse-step',
+            'parse_for_brep': '/parse-step-for-brep',
             'render': '/render-step',
             'batch_render': '/render-step-batch',
             'test_rendering': '/test-rendering',
